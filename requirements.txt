@@ -1,6 +1,4 @@
 ultralytics>=8.4.0    # YOLO26 + ByteTrack
 opencv-python>=4.8.0  # Camera capture + GUI display
 numpy>=1.24.0         # Array operations (pulled by ultralytics)
-
-# Optional: Intel iGPU acceleration (~2-3x speedup on Intel Iris Xe / Arc)
-# openvino>=2024.0
+openvino>=2024.0      # Optional: Intel iGPU acceleration

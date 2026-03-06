@@ -57,10 +57,10 @@ def detect_intel_gpu_available():
     Returns True if openvino is installed AND a GPU device is found.
     """
     try:
-        from openvino.runtime import Core
+        from openvino import Core
 
         available_devices = Core().available_devices
-        has_gpu = "GPU" in available_devices
+        has_gpu = any(d == "GPU" or d.startswith("GPU.") for d in available_devices)
         logger.debug("OpenVINO available devices: %s", available_devices)
         return has_gpu
     except ImportError:
