@@ -1,0 +1,243 @@
+# AGPL License Notice:
+# This application uses Ultralytics YOLO which is licensed under AGPL-3.0.
+# If you add a network API (e.g. REST, WebSocket) that exposes this
+# application's functionality, AGPL requires you to make the complete
+# source code available to users who interact with it over the network.
+
+"""Entry point for the people counter application.
+
+Usage:
+    python main.py                    # GUI mode, default webcam
+    python main.py --headless         # No GUI
+    python main.py --camera 1         # Different camera index
+    python main.py --camera rtsp://.. # RTSP stream
+    python main.py --model yolo26n.pt # Lighter model
+    python main.py --device cpu       # Force CPU inference
+"""
+
+import argparse
+import logging
+import os
+import signal
+import sys
+from logging.handlers import RotatingFileHandler
+
+from config import (
+    BYTETRACK_TRACK_BUFFER,
+    DEFAULT_CAMERA_INDEX,
+    DEFAULT_CONFIDENCE_THRESHOLD,
+    DEFAULT_DEVICE,
+    DEFAULT_LOG_LEVEL,
+    DEFAULT_MODEL_NAME,
+    DEFAULT_OUTPUT_DIRECTORY,
+    LOG_BACKUP_COUNT,
+    LOG_FILE_NAME,
+    LOG_MAX_BYTES,
+    LOST_TIMEOUT_SECONDS,
+    VALID_DEVICES,
+)
+from counter import PeopleCounter, parse_camera_source
+from detector import PersonDetector
+from storage import EventStorage
+from tracker import PersonTracker
+
+logger = logging.getLogger("people_counter")
+
+
+def validate_confidence(value):
+    """Argparse type validator: confidence must be in (0.0, 1.0]."""
+    try:
+        float_value = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Invalid confidence value: {value}")
+
+    if not (0.0 < float_value <= 1.0):
+        raise argparse.ArgumentTypeError(
+            f"Confidence must be between 0.0 (exclusive) and 1.0 (inclusive), "
+            f"got {float_value}"
+        )
+    return float_value
+
+
+def build_argument_parser():
+    """Create and return the CLI argument parser."""
+    parser = argparse.ArgumentParser(
+        description="People counter using YOLO26 + ByteTrack. "
+        "Counts people passing through a camera view and logs events to CSV."
+    )
+
+    parser.add_argument(
+        "--camera",
+        default=str(DEFAULT_CAMERA_INDEX),
+        help="Camera device index (integer) or RTSP/video URL. Default: 0",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL_NAME,
+        help=f"YOLO model file name. Default: {DEFAULT_MODEL_NAME}",
+    )
+    parser.add_argument(
+        "--device",
+        default=DEFAULT_DEVICE,
+        choices=VALID_DEVICES,
+        help="Inference device: 'auto' (detect Intel iGPU), 'cpu', or 'openvino'. "
+        f"Default: {DEFAULT_DEVICE}",
+    )
+    parser.add_argument(
+        "--confidence",
+        type=validate_confidence,
+        default=DEFAULT_CONFIDENCE_THRESHOLD,
+        help=f"Minimum detection confidence (0.0 < x <= 1.0). "
+        f"Default: {DEFAULT_CONFIDENCE_THRESHOLD}",
+    )
+    parser.add_argument(
+        "--output",
+        default=DEFAULT_OUTPUT_DIRECTORY,
+        help=f"Output directory for CSV files. Default: {DEFAULT_OUTPUT_DIRECTORY}",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without GUI display",
+    )
+    parser.add_argument(
+        "--log-level",
+        default=DEFAULT_LOG_LEVEL,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help=f"Logging verbosity. Default: {DEFAULT_LOG_LEVEL}",
+    )
+
+    return parser
+
+
+def setup_logging(log_level, output_directory):
+    """Configure logging to both console and rotating file."""
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, log_level))
+
+    log_format = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(log_format)
+    root_logger.addHandler(console_handler)
+
+    # Rotating file handler
+    log_file_path = os.path.join(output_directory, LOG_FILE_NAME)
+    try:
+        file_handler = RotatingFileHandler(
+            log_file_path,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(log_format)
+        root_logger.addHandler(file_handler)
+    except Exception as error:
+        # Log to console only if file logging fails
+        root_logger.warning("Could not set up file logging: %s", error)
+
+
+def register_signal_handlers(people_counter):
+    """Register OS signal handlers for graceful shutdown.
+
+    SIGINT: All platforms (Ctrl+C)
+    SIGTERM: Linux only
+    SIGBREAK: Windows only (Ctrl+Break)
+    Also handles Windows console close event via SetConsoleCtrlHandler.
+    """
+
+    def handle_shutdown_signal(signal_number, stack_frame):
+        people_counter.request_stop()
+
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+
+    if sys.platform != "win32":
+        signal.signal(signal.SIGTERM, handle_shutdown_signal)
+    else:
+        # Windows: handle Ctrl+Break
+        if hasattr(signal, "SIGBREAK"):
+            signal.signal(signal.SIGBREAK, handle_shutdown_signal)
+
+        # Windows: handle console close event (user clicking X on console)
+        try:
+            import ctypes
+
+            CTRL_CLOSE_EVENT = 2
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong)
+            def console_ctrl_handler(event_type):
+                if event_type == CTRL_CLOSE_EVENT:
+                    logger.info("Console close event detected, requesting shutdown...")
+                    people_counter.request_stop()
+                    return True
+                return False
+
+            # Store reference to prevent garbage collection — the only other
+            # reference is held by the Windows kernel via SetConsoleCtrlHandler,
+            # which Python's GC cannot see.
+            people_counter._console_ctrl_handler = console_ctrl_handler
+            ctypes.windll.kernel32.SetConsoleCtrlHandler(console_ctrl_handler, True)
+        except Exception as error:
+            logger.debug("Could not set Windows console handler: %s", error)
+
+
+def main():
+    """Parse arguments and run the people counter."""
+    parser = build_argument_parser()
+    args = parser.parse_args()
+
+    # Create output directory and set up logging
+    os.makedirs(args.output, exist_ok=True)
+    setup_logging(args.log_level, args.output)
+
+    logger.info("People Counter starting")
+    logger.info(
+        "Config: camera=%s, model=%s, device=%s, confidence=%s, output=%s, headless=%s",
+        args.camera,
+        args.model,
+        args.device,
+        args.confidence,
+        args.output,
+        args.headless,
+    )
+
+    # Initialize components
+    camera_source = parse_camera_source(args.camera)
+
+    storage = EventStorage(output_directory=args.output)
+    storage.ensure_output_directory_exists()
+
+    detector = PersonDetector(
+        model_name=args.model,
+        confidence_threshold=args.confidence,
+        device=args.device,
+    )
+
+    tracker = PersonTracker(lost_timeout_seconds=LOST_TIMEOUT_SECONDS)
+
+    people_counter = PeopleCounter(
+        camera_source=camera_source,
+        detector=detector,
+        tracker=tracker,
+        storage=storage,
+        headless=args.headless,
+        output_directory=args.output,
+    )
+
+    register_signal_handlers(people_counter)
+
+    try:
+        people_counter.run()
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received")
+    except Exception as error:
+        logger.critical("Fatal error: %s", error, exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
