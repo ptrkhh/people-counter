@@ -36,7 +36,7 @@ def _get_tracker_config_path():
         f"tracker_type: bytetrack\n"
         f"track_high_thresh: 0.25\n"
         f"track_low_thresh: 0.1\n"
-        f"new_track_thresh: 0.25\n"
+        f"new_track_thresh: 0.5\n"
         f"track_buffer: {BYTETRACK_TRACK_BUFFER}\n"
         f"match_thresh: 0.8\n"
         f"fuse_score: true\n"
