@@ -5,3 +5,5 @@ output
 .claude
 yolo26n_openvino_model
 yolo26s_openvino_model
+build
+dist

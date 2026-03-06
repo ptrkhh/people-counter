@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sys
 import tempfile
 import time
 
@@ -61,7 +62,7 @@ def detect_intel_gpu_available():
 
         available_devices = Core().available_devices
         has_gpu = any(d == "GPU" or d.startswith("GPU.") for d in available_devices)
-        logger.debug("OpenVINO available devices: %s", available_devices)
+        logger.info("OpenVINO available devices: %s", available_devices)
         return has_gpu
     except ImportError:
         return False
@@ -104,6 +105,18 @@ def export_model_to_openvino(model):
         return None
 
 
+def _resolve_model_path(model_name):
+    """Resolve model path, checking PyInstaller bundle directory if frozen."""
+    if os.path.isfile(model_name):
+        return model_name
+    if getattr(sys, "frozen", False):
+        bundled_path = os.path.join(sys._MEIPASS, model_name)
+        if os.path.isfile(bundled_path):
+            logger.info("Using bundled model: %s", bundled_path)
+            return bundled_path
+    return model_name
+
+
 def resolve_device_and_model(model_name, device_preference):
     """Determine the inference device and load the appropriate model.
 
@@ -114,15 +127,17 @@ def resolve_device_and_model(model_name, device_preference):
     Returns:
         A loaded YOLO model ready for inference.
     """
+    model_path = _resolve_model_path(model_name)
+
     if device_preference == DEVICE_CPU:
         logger.info("Device set to CPU — skipping iGPU detection")
-        return YOLO(model_name)
+        return YOLO(model_path)
 
     if device_preference == DEVICE_OPENVINO:
-        return _load_openvino_model_or_fail(model_name)
+        return _load_openvino_model_or_fail(model_path)
 
     # device_preference == "auto"
-    return _auto_detect_and_load(model_name)
+    return _auto_detect_and_load(model_path)
 
 
 def _load_openvino_model_or_fail(model_name):
