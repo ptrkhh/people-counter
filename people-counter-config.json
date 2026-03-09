@@ -7,5 +7,19 @@
     "headless": true,
     "log_level": "INFO",
     "lost_timeout": 3.0,
-    "track_buffer": 90
+    "track_buffer": 90,
+    "track_high_thresh": 0.25,
+    "track_low_thresh": 0.1,
+    "new_track_thresh": 0.5,
+    "match_thresh": 0.8,
+    "fuse_score": true,
+    "status_log_interval_seconds": 60,
+    "reconnect_delay_initial_seconds": 5,
+    "reconnect_delay_max_seconds": 30,
+    "max_consecutive_read_failures": 10,
+    "max_consecutive_detection_failures": 10,
+    "max_consecutive_write_failures": 10,
+    "camera_open_timeout_milliseconds": 5000,
+    "log_max_bytes": 10485760,
+    "log_backup_count": 3
 }

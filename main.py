@@ -24,9 +24,7 @@ import sys
 from logging.handlers import RotatingFileHandler
 
 from config import (
-    LOG_BACKUP_COUNT,
     LOG_FILE_NAME,
-    LOG_MAX_BYTES,
     VALID_DEVICES,
 )
 from counter import PeopleCounter, parse_camera_source
@@ -46,6 +44,20 @@ REQUIRED_CONFIG_KEYS = [
     "log_level",
     "lost_timeout",
     "track_buffer",
+    "track_high_thresh",
+    "track_low_thresh",
+    "new_track_thresh",
+    "match_thresh",
+    "fuse_score",
+    "status_log_interval_seconds",
+    "reconnect_delay_initial_seconds",
+    "reconnect_delay_max_seconds",
+    "max_consecutive_read_failures",
+    "max_consecutive_detection_failures",
+    "max_consecutive_write_failures",
+    "camera_open_timeout_milliseconds",
+    "log_max_bytes",
+    "log_backup_count",
 ]
 
 logger = logging.getLogger("people_counter")
@@ -188,7 +200,7 @@ def build_argument_parser():
     return parser
 
 
-def setup_logging(log_level, output_directory):
+def setup_logging(log_level, output_directory, log_max_bytes, log_backup_count):
     """Configure logging to both console and rotating file."""
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, log_level))
@@ -208,8 +220,8 @@ def setup_logging(log_level, output_directory):
     try:
         file_handler = RotatingFileHandler(
             log_file_path,
-            maxBytes=LOG_MAX_BYTES,
-            backupCount=LOG_BACKUP_COUNT,
+            maxBytes=log_max_bytes,
+            backupCount=log_backup_count,
             encoding="utf-8",
         )
         file_handler.setFormatter(log_format)
@@ -293,7 +305,10 @@ def main():
 
     # Create output directory and set up logging
     os.makedirs(args.output, exist_ok=True)
-    setup_logging(args.log_level, args.output)
+    setup_logging(
+        args.log_level, args.output,
+        int(config["log_max_bytes"]), int(config["log_backup_count"]),
+    )
 
     logger.info("People Counter starting")
     logger.info(
@@ -309,20 +324,27 @@ def main():
         args.track_buffer,
     )
 
-    # Override ByteTrack track_buffer before detector is created
-    import config as config_module
-    config_module.BYTETRACK_TRACK_BUFFER = args.track_buffer
-
     # Initialize components
     camera_source = parse_camera_source(args.camera)
 
-    storage = EventStorage(output_directory=args.output)
+    storage = EventStorage(
+        output_directory=args.output,
+        max_consecutive_write_failures=int(
+            config["max_consecutive_write_failures"]
+        ),
+    )
     storage.ensure_output_directory_exists()
 
     detector = PersonDetector(
         model_name=args.model,
         confidence_threshold=args.confidence,
         device=args.device,
+        track_high_thresh=float(config["track_high_thresh"]),
+        track_low_thresh=float(config["track_low_thresh"]),
+        new_track_thresh=float(config["new_track_thresh"]),
+        track_buffer=args.track_buffer,
+        match_thresh=float(config["match_thresh"]),
+        fuse_score=config["fuse_score"],
     )
 
     tracker = PersonTracker(lost_timeout_seconds=args.lost_timeout)
@@ -334,6 +356,24 @@ def main():
         storage=storage,
         headless=args.headless,
         output_directory=args.output,
+        camera_open_timeout_milliseconds=int(
+            config["camera_open_timeout_milliseconds"]
+        ),
+        max_consecutive_read_failures=int(
+            config["max_consecutive_read_failures"]
+        ),
+        max_consecutive_detection_failures=int(
+            config["max_consecutive_detection_failures"]
+        ),
+        reconnect_delay_initial_seconds=int(
+            config["reconnect_delay_initial_seconds"]
+        ),
+        reconnect_delay_max_seconds=int(
+            config["reconnect_delay_max_seconds"]
+        ),
+        status_log_interval_seconds=int(
+            config["status_log_interval_seconds"]
+        ),
     )
 
     register_signal_handlers(people_counter)

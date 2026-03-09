@@ -11,11 +11,7 @@ import logging
 import os
 from datetime import date, datetime
 
-from config import (
-    CSV_HEADER_FIELDS,
-    DEFAULT_OUTPUT_DIRECTORY,
-    MAX_CONSECUTIVE_WRITE_FAILURES,
-)
+from config import CSV_HEADER_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +23,9 @@ class EventStorage:
     Rows are flushed immediately after writing.
     """
 
-    def __init__(self, output_directory=DEFAULT_OUTPUT_DIRECTORY):
+    def __init__(self, output_directory, max_consecutive_write_failures):
         self.output_directory = output_directory
+        self.max_consecutive_write_failures = max_consecutive_write_failures
         self.current_date = None
         self.file_handle = None
         self.csv_writer = None
@@ -109,7 +106,7 @@ class EventStorage:
                 self.consecutive_write_failures,
                 error,
             )
-            if self.consecutive_write_failures >= MAX_CONSECUTIVE_WRITE_FAILURES:
+            if self.consecutive_write_failures >= self.max_consecutive_write_failures:
                 logger.critical(
                     "CSV write has failed %d consecutive times. "
                     "Storage may be full or inaccessible.",

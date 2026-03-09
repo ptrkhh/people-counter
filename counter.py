@@ -17,19 +17,13 @@ from config import (
     BOUNDING_BOX_COLOR,
     BOUNDING_BOX_THICKNESS,
     CAMERA_BUFFER_SIZE,
-    CAMERA_OPEN_TIMEOUT_MILLISECONDS,
     DISPLAY_WINDOW_NAME,
     EVENT_TYPE_DISCONNECT_FLUSH,
     EVENT_TYPE_SHUTDOWN_FLUSH,
     HEARTBEAT_FILE_NAME,
-    MAX_CONSECUTIVE_DETECTION_FAILURES,
-    MAX_CONSECUTIVE_READ_FAILURES,
     OVERLAY_BACKGROUND_COLOR,
     OVERLAY_FONT_SCALE,
     OVERLAY_TEXT_COLOR,
-    RECONNECT_DELAY_INITIAL_SECONDS,
-    RECONNECT_DELAY_MAX_SECONDS,
-    STATUS_LOG_INTERVAL_SECONDS,
     TEXT_COLOR,
     TEXT_FONT_SCALE,
     TEXT_THICKNESS,
@@ -68,11 +62,12 @@ def detect_display_available():
     return display is not None
 
 
-def open_camera(camera_source):
+def open_camera(camera_source, camera_open_timeout_milliseconds):
     """Open a camera/video source and configure it for low latency.
 
     Args:
         camera_source: Integer device index or string URL/path.
+        camera_open_timeout_milliseconds: Timeout for opening the camera.
 
     Returns:
         An opened cv2.VideoCapture, or None if opening failed.
@@ -84,7 +79,7 @@ def open_camera(camera_source):
         # The one-step VideoCapture(url) constructor calls open() internally,
         # so setting the timeout afterward has no effect on RTSP streams.
         capture = cv2.VideoCapture()
-        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, CAMERA_OPEN_TIMEOUT_MILLISECONDS)
+        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, camera_open_timeout_milliseconds)
         capture.open(camera_source)
     else:
         capture = cv2.VideoCapture(camera_source)
@@ -199,13 +194,25 @@ class PeopleCounter:
     """Main orchestrator that runs the capture-detect-track-count loop."""
 
     def __init__(self, camera_source, detector, tracker, storage,
-                 headless=False, output_directory="."):
+                 headless, output_directory,
+                 camera_open_timeout_milliseconds,
+                 max_consecutive_read_failures,
+                 max_consecutive_detection_failures,
+                 reconnect_delay_initial_seconds,
+                 reconnect_delay_max_seconds,
+                 status_log_interval_seconds):
         self.camera_source = camera_source
         self.detector = detector
         self.tracker = tracker
         self.storage = storage
         self.headless = headless
         self.output_directory = output_directory
+        self.camera_open_timeout_milliseconds = camera_open_timeout_milliseconds
+        self.max_consecutive_read_failures = max_consecutive_read_failures
+        self.max_consecutive_detection_failures = max_consecutive_detection_failures
+        self.reconnect_delay_initial_seconds = reconnect_delay_initial_seconds
+        self.reconnect_delay_max_seconds = reconnect_delay_max_seconds
+        self.status_log_interval_seconds = status_log_interval_seconds
 
         self.is_running = False
         self.capture = None
@@ -235,7 +242,9 @@ class PeopleCounter:
             "from a prior crash are not recoverable."
         )
 
-        self.capture = open_camera(self.camera_source)
+        self.capture = open_camera(
+            self.camera_source, self.camera_open_timeout_milliseconds
+        )
         if self.capture is None:
             raise RuntimeError(
                 f"Cannot open camera: {self.camera_source}. "
@@ -252,7 +261,7 @@ class PeopleCounter:
 
     def _process_frames(self):
         """Main frame processing loop with reconnection logic."""
-        reconnect_delay = RECONNECT_DELAY_INITIAL_SECONDS
+        reconnect_delay = self.reconnect_delay_initial_seconds
         consecutive_read_failures = 0
 
         while self.is_running:
@@ -262,7 +271,7 @@ class PeopleCounter:
 
             if not success:
                 consecutive_read_failures += 1
-                if consecutive_read_failures >= MAX_CONSECUTIVE_READ_FAILURES:
+                if consecutive_read_failures >= self.max_consecutive_read_failures:
                     logger.error(
                         "Camera read failed %d consecutive times — attempting reconnect",
                         consecutive_read_failures,
@@ -275,7 +284,7 @@ class PeopleCounter:
 
             consecutive_read_failures = 0
             # Reset reconnect delay on successful read
-            reconnect_delay = RECONNECT_DELAY_INITIAL_SECONDS
+            reconnect_delay = self.reconnect_delay_initial_seconds
 
             self._process_single_frame(frame)
 
@@ -290,7 +299,7 @@ class PeopleCounter:
             results = self.detector.detect_persons(frame)
         except Exception as error:
             self.consecutive_detection_failures += 1
-            if self.consecutive_detection_failures >= MAX_CONSECUTIVE_DETECTION_FAILURES:
+            if self.consecutive_detection_failures >= self.max_consecutive_detection_failures:
                 logger.critical(
                     "Detection has failed %d consecutive times: %s",
                     self.consecutive_detection_failures,
@@ -372,13 +381,15 @@ class PeopleCounter:
             if not self.is_running:
                 return current_delay
 
-            self.capture = open_camera(self.camera_source)
+            self.capture = open_camera(
+                self.camera_source, self.camera_open_timeout_milliseconds
+            )
             if self.capture is not None:
                 logger.info("Camera reconnected successfully")
-                return RECONNECT_DELAY_INITIAL_SECONDS
+                return self.reconnect_delay_initial_seconds
 
             # Exponential backoff with cap
-            current_delay = min(current_delay * 2, RECONNECT_DELAY_MAX_SECONDS)
+            current_delay = min(current_delay * 2, self.reconnect_delay_max_seconds)
 
         return current_delay
 
@@ -387,7 +398,7 @@ class PeopleCounter:
         current_time = time.monotonic()
         elapsed_since_last_log = current_time - self.last_status_log_time
 
-        if elapsed_since_last_log < STATUS_LOG_INTERVAL_SECONDS:
+        if elapsed_since_last_log < self.status_log_interval_seconds:
             return
 
         effective_fps = self.frame_count / elapsed_since_last_log

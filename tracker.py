@@ -9,7 +9,7 @@ considered "left" and triggers a count event.
 import logging
 import time
 
-from config import EVENT_TYPE_LEFT, LOST_TIMEOUT_SECONDS
+from config import EVENT_TYPE_LEFT
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class PersonTracker:
     when a person has "left" (not seen for lost_timeout_seconds).
     """
 
-    def __init__(self, lost_timeout_seconds=LOST_TIMEOUT_SECONDS):
+    def __init__(self, lost_timeout_seconds):
         self.lost_timeout_seconds = lost_timeout_seconds
         self.active_tracks = {}  # track_id -> TrackedPerson
         self.total_count = 0

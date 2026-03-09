@@ -9,47 +9,12 @@ import time
 from ultralytics import YOLO
 
 from config import (
-    BYTETRACK_TRACK_BUFFER,
-    DEFAULT_CONFIDENCE_THRESHOLD,
-    DEFAULT_DEVICE,
-    DEFAULT_MODEL_NAME,
     DEVICE_CPU,
     DEVICE_OPENVINO,
     YOLO_PERSON_CLASS_ID,
 )
 
 logger = logging.getLogger(__name__)
-
-# Custom ByteTrack config with tuned track_buffer for better occlusion handling.
-_TRACKER_CONFIG_PATH = None
-
-
-def _get_tracker_config_path():
-    """Return path to a custom ByteTrack YAML config with tuned track_buffer.
-
-    Creates the file once on first call, reuses it afterward.
-    """
-    global _TRACKER_CONFIG_PATH
-    if _TRACKER_CONFIG_PATH is not None:
-        return _TRACKER_CONFIG_PATH
-
-    config_content = (
-        f"tracker_type: bytetrack\n"
-        f"track_high_thresh: 0.25\n"
-        f"track_low_thresh: 0.1\n"
-        f"new_track_thresh: 0.5\n"
-        f"track_buffer: {BYTETRACK_TRACK_BUFFER}\n"
-        f"match_thresh: 0.8\n"
-        f"fuse_score: true\n"
-    )
-
-    config_path = os.path.join(tempfile.gettempdir(), "people_counter_bytetrack.yaml")
-    with open(config_path, "w") as config_file:
-        config_file.write(config_content)
-
-    _TRACKER_CONFIG_PATH = config_path
-    logger.debug("Tracker config written to: %s (track_buffer=%d)", config_path, BYTETRACK_TRACK_BUFFER)
-    return _TRACKER_CONFIG_PATH
 
 
 def detect_intel_gpu_available():
@@ -216,12 +181,42 @@ def _load_or_export_openvino(model_name):
 class PersonDetector:
     """Wraps a YOLO model to detect only people in video frames."""
 
-    def __init__(self, model_name=DEFAULT_MODEL_NAME,
-                 confidence_threshold=DEFAULT_CONFIDENCE_THRESHOLD,
-                 device=DEFAULT_DEVICE):
+    def __init__(self, model_name, confidence_threshold, device,
+                 track_high_thresh, track_low_thresh, new_track_thresh,
+                 track_buffer, match_thresh, fuse_score):
         self.confidence_threshold = confidence_threshold
         self.model = resolve_device_and_model(model_name, device)
         self.last_detection_duration_seconds = 0.0
+        self._tracker_config_path = self._write_tracker_config(
+            track_high_thresh, track_low_thresh, new_track_thresh,
+            track_buffer, match_thresh, fuse_score,
+        )
+
+    def _write_tracker_config(self, track_high_thresh, track_low_thresh,
+                              new_track_thresh, track_buffer, match_thresh,
+                              fuse_score):
+        """Write a ByteTrack YAML config file with the given parameters.
+
+        Returns the path to the written config file.
+        """
+        config_content = (
+            f"tracker_type: bytetrack\n"
+            f"track_high_thresh: {track_high_thresh}\n"
+            f"track_low_thresh: {track_low_thresh}\n"
+            f"new_track_thresh: {new_track_thresh}\n"
+            f"track_buffer: {track_buffer}\n"
+            f"match_thresh: {match_thresh}\n"
+            f"fuse_score: {str(fuse_score).lower()}\n"
+        )
+
+        config_path = os.path.join(
+            tempfile.gettempdir(), "people_counter_bytetrack.yaml"
+        )
+        with open(config_path, "w") as config_file:
+            config_file.write(config_content)
+
+        logger.debug("Tracker config written to: %s", config_path)
+        return config_path
 
     def detect_persons(self, frame):
         """Run person detection on a single video frame.
@@ -241,7 +236,7 @@ class PersonDetector:
             conf=self.confidence_threshold,
             persist=True,
             verbose=False,
-            tracker=_get_tracker_config_path(),
+            tracker=self._tracker_config_path,
         )
 
         end_time = time.monotonic()
