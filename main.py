@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import signal
@@ -41,7 +42,28 @@ from detector import PersonDetector
 from storage import EventStorage
 from tracker import PersonTracker
 
+CONFIG_FILENAME = "people-counter-config.json"
+
 logger = logging.getLogger("people_counter")
+
+
+def get_base_path():
+    """Return the directory where the executable (or script) lives."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def load_config_file():
+    """Load people-counter-config.json from next to the exe/script.
+
+    Returns the parsed dict, or an empty dict if the file is missing.
+    """
+    config_path = os.path.join(get_base_path(), CONFIG_FILENAME)
+    if not os.path.isfile(config_path):
+        return {}
+    with open(config_path, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def validate_confidence(value):
@@ -99,6 +121,20 @@ def build_argument_parser():
         "--headless",
         action="store_true",
         help="Run without GUI display",
+    )
+    parser.add_argument(
+        "--lost-timeout",
+        type=float,
+        default=LOST_TIMEOUT_SECONDS,
+        help=f"Seconds before a disappeared person's ID is forgotten. "
+        f"Default: {LOST_TIMEOUT_SECONDS}",
+    )
+    parser.add_argument(
+        "--track-buffer",
+        type=int,
+        default=BYTETRACK_TRACK_BUFFER,
+        help=f"Frames ByteTrack remembers a lost track before assigning a new ID. "
+        f"Higher = more likely to reuse same ID. Default: {BYTETRACK_TRACK_BUFFER}",
     )
     parser.add_argument(
         "--log-level",
@@ -186,8 +222,40 @@ def register_signal_handlers(people_counter):
 
 
 def main():
-    """Parse arguments and run the people counter."""
+    """Parse arguments and run the people counter.
+
+    Settings are resolved in order of precedence (highest first):
+    1. CLI arguments
+    2. people-counter-config.json (next to the exe/script)
+    3. Built-in defaults
+    """
+    config = load_config_file()
+
     parser = build_argument_parser()
+
+    # Apply config file values as defaults (CLI args still override)
+    if config:
+        defaults = {}
+        if "camera" in config:
+            defaults["camera"] = str(config["camera"])
+        if "model" in config:
+            defaults["model"] = config["model"]
+        if "device" in config:
+            defaults["device"] = config["device"]
+        if "confidence" in config:
+            defaults["confidence"] = float(config["confidence"])
+        if "output" in config:
+            defaults["output"] = config["output"]
+        if "headless" in config:
+            defaults["headless"] = config["headless"]
+        if "log_level" in config:
+            defaults["log_level"] = config["log_level"]
+        if "lost_timeout" in config:
+            defaults["lost_timeout"] = float(config["lost_timeout"])
+        if "track_buffer" in config:
+            defaults["track_buffer"] = int(config["track_buffer"])
+        parser.set_defaults(**defaults)
+
     args = parser.parse_args()
 
     # Create output directory and set up logging
@@ -196,14 +264,21 @@ def main():
 
     logger.info("People Counter starting")
     logger.info(
-        "Config: camera=%s, model=%s, device=%s, confidence=%s, output=%s, headless=%s",
+        "Config: camera=%s, model=%s, device=%s, confidence=%s, output=%s, "
+        "headless=%s, lost_timeout=%s, track_buffer=%s",
         args.camera,
         args.model,
         args.device,
         args.confidence,
         args.output,
         args.headless,
+        args.lost_timeout,
+        args.track_buffer,
     )
+
+    # Override ByteTrack track_buffer before detector is created
+    import config as config_module
+    config_module.BYTETRACK_TRACK_BUFFER = args.track_buffer
 
     # Initialize components
     camera_source = parse_camera_source(args.camera)
@@ -217,7 +292,7 @@ def main():
         device=args.device,
     )
 
-    tracker = PersonTracker(lost_timeout_seconds=LOST_TIMEOUT_SECONDS)
+    tracker = PersonTracker(lost_timeout_seconds=args.lost_timeout)
 
     people_counter = PeopleCounter(
         camera_source=camera_source,

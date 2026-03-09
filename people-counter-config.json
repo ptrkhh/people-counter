@@ -1,0 +1,11 @@
+{
+    "camera": "0",
+    "model": "yolo26s.pt",
+    "device": "auto",
+    "confidence": 0.6,
+    "output": "./output",
+    "headless": true,
+    "log_level": "INFO",
+    "lost_timeout": 3.0,
+    "track_buffer": 90
+}
