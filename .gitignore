@@ -8,3 +8,6 @@ yolo26s_openvino_model
 build
 dist
 people-counter.spec
+gcs-uploader/gcs-uploader-credentials.json
+gcs-uploader/gcs-uploader.spec
+*.csv

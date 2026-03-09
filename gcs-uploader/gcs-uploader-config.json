@@ -1,0 +1,4 @@
+{
+    "bucket_name": "some-random-bucket",
+    "csv_pattern": "people_count_*.csv"
+}
