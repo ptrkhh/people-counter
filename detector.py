@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -26,14 +27,16 @@ def detect_intel_gpu_available():
         from openvino import Core
 
         available_devices = Core().available_devices
-        has_gpu = any(d == "GPU" or d.startswith("GPU.") for d in available_devices)
         logger.info("OpenVINO available devices: %s", available_devices)
-        return has_gpu
+        for d in available_devices:
+            if d.startswith("GPU"):
+                return d
+        return None
     except ImportError:
-        return False
+        return None
     except Exception as error:
         logger.warning("OpenVINO device check failed: %s", error)
-        return False
+        return None
 
 
 def is_openvino_installed():
@@ -61,6 +64,9 @@ def export_model_to_openvino(model):
     Returns the path to the exported model directory, or None on failure.
     """
     try:
+        if getattr(model.model, "end2end", False):
+            logger.info("Disabling end2end for OpenVINO export (NMS handled in Python)")
+            model.model.end2end = False
         logger.info("Exporting model to OpenVINO format (one-time operation)...")
         exported_path = model.export(format="openvino")
         logger.info("OpenVINO export complete: %s", exported_path)
@@ -113,13 +119,10 @@ def _load_openvino_model_or_fail(model_name):
             "Install it with: pip install openvino"
         )
 
-    if not detect_intel_gpu_available():
-        logger.warning(
-            "Device set to 'openvino' but no Intel GPU detected. "
-            "OpenVINO will use CPU fallback."
-        )
-
-    return _load_or_export_openvino(model_name)
+    gpu_device = detect_intel_gpu_available()
+    if not gpu_device:
+        logger.warning("Device set to 'openvino' but no Intel GPU detected. OpenVINO will use CPU fallback.")
+    return _load_or_export_openvino(model_name, gpu_device)
 
 
 def _auto_detect_and_load(model_name):
@@ -132,7 +135,7 @@ def _auto_detect_and_load(model_name):
             "Intel iGPU detected, OpenVINO available — "
             "using GPU-accelerated inference"
         )
-        model = _load_or_export_openvino(model_name)
+        model = _load_or_export_openvino(model_name, intel_gpu_found)
         if model is not None:
             return model
         logger.warning("OpenVINO load failed, falling back to CPU")
@@ -150,7 +153,7 @@ def _auto_detect_and_load(model_name):
     return YOLO(model_name)
 
 
-def _load_or_export_openvino(model_name):
+def _load_or_export_openvino(model_name, gpu_device=None):
     """Load existing OpenVINO model or export from .pt file.
 
     Returns the loaded model, or None if export/load fails.
@@ -158,12 +161,19 @@ def _load_or_export_openvino(model_name):
     openvino_path = get_openvino_model_path(model_name)
 
     if os.path.isdir(openvino_path):
-        logger.info("Loading existing OpenVINO model from: %s", openvino_path)
-        try:
-            return YOLO(openvino_path)
-        except Exception as error:
-            logger.warning("Failed to load OpenVINO model: %s", error)
-            return None
+        if any(f.endswith(".xml") for f in os.listdir(openvino_path)):
+            logger.info("Loading existing OpenVINO model from: %s", openvino_path)
+            try:
+                model = YOLO(openvino_path)
+                if gpu_device:
+                    model.overrides["device"] = f"intel:{gpu_device}"
+                return model
+            except Exception as error:
+                logger.warning("Failed to load OpenVINO model: %s", error)
+                return None
+        else:
+            logger.warning("OpenVINO dir exists but has no .xml file, re-exporting: %s", openvino_path)
+            shutil.rmtree(openvino_path)
 
     # Need to export from .pt first
     base_model = YOLO(model_name)
@@ -172,7 +182,10 @@ def _load_or_export_openvino(model_name):
         return None
 
     try:
-        return YOLO(exported_path)
+        model = YOLO(exported_path)
+        if gpu_device:
+            model.overrides["device"] = f"intel:{gpu_device}"
+        return model
     except Exception as error:
         logger.warning("Failed to load exported OpenVINO model: %s", error)
         return None

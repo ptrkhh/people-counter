@@ -4,7 +4,7 @@
     "device": "auto",
     "confidence": 0.6,
     "output": "./output",
-    "headless": true,
+    "headless": false,
     "log_level": "INFO",
     "lost_timeout": 3.0,
     "track_buffer": 90,
