@@ -24,17 +24,9 @@ import sys
 from logging.handlers import RotatingFileHandler
 
 from config import (
-    BYTETRACK_TRACK_BUFFER,
-    DEFAULT_CAMERA_INDEX,
-    DEFAULT_CONFIDENCE_THRESHOLD,
-    DEFAULT_DEVICE,
-    DEFAULT_LOG_LEVEL,
-    DEFAULT_MODEL_NAME,
-    DEFAULT_OUTPUT_DIRECTORY,
     LOG_BACKUP_COUNT,
     LOG_FILE_NAME,
     LOG_MAX_BYTES,
-    LOST_TIMEOUT_SECONDS,
     VALID_DEVICES,
 )
 from counter import PeopleCounter, parse_camera_source
@@ -43,6 +35,18 @@ from storage import EventStorage
 from tracker import PersonTracker
 
 CONFIG_FILENAME = "people-counter-config.json"
+
+REQUIRED_CONFIG_KEYS = [
+    "camera",
+    "model",
+    "device",
+    "confidence",
+    "output",
+    "headless",
+    "log_level",
+    "lost_timeout",
+    "track_buffer",
+]
 
 logger = logging.getLogger("people_counter")
 
@@ -55,15 +59,61 @@ def get_base_path():
 
 
 def load_config_file():
-    """Load people-counter-config.json from next to the exe/script.
+    """Load and validate people-counter-config.json.
 
-    Returns the parsed dict, or an empty dict if the file is missing.
+    The config file must exist next to the exe/script and contain all
+    required keys.  Prints an error and exits if validation fails.
     """
     config_path = os.path.join(get_base_path(), CONFIG_FILENAME)
     if not os.path.isfile(config_path):
-        return {}
+        print(f"ERROR: Config file not found: {config_path}")
+        sys.exit(1)
+
     with open(config_path, encoding="utf-8") as f:
-        return json.load(f)
+        config = json.load(f)
+
+    missing = [k for k in REQUIRED_CONFIG_KEYS if k not in config]
+    if missing:
+        print(
+            f"ERROR: Missing required config key(s) in {CONFIG_FILENAME}: "
+            f"{', '.join(missing)}"
+        )
+        sys.exit(1)
+
+    # Validate device
+    if config["device"] not in VALID_DEVICES:
+        print(
+            f"ERROR: Invalid device '{config['device']}' in {CONFIG_FILENAME}. "
+            f"Valid options: {', '.join(VALID_DEVICES)}"
+        )
+        sys.exit(1)
+
+    # Validate confidence
+    try:
+        conf = float(config["confidence"])
+    except (TypeError, ValueError):
+        print(
+            f"ERROR: Invalid confidence value in {CONFIG_FILENAME}: "
+            f"{config['confidence']}"
+        )
+        sys.exit(1)
+    if not (0.0 < conf <= 1.0):
+        print(
+            f"ERROR: confidence must be between 0.0 (exclusive) and 1.0 "
+            f"(inclusive), got {conf}"
+        )
+        sys.exit(1)
+
+    # Validate log_level
+    valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    if config["log_level"] not in valid_log_levels:
+        print(
+            f"ERROR: Invalid log_level '{config['log_level']}' in "
+            f"{CONFIG_FILENAME}. Valid options: {', '.join(valid_log_levels)}"
+        )
+        sys.exit(1)
+
+    return config
 
 
 def validate_confidence(value):
@@ -82,7 +132,11 @@ def validate_confidence(value):
 
 
 def build_argument_parser():
-    """Create and return the CLI argument parser."""
+    """Create and return the CLI argument parser.
+
+    All defaults come from the JSON config file via set_defaults().
+    CLI arguments override config file values.
+    """
     parser = argparse.ArgumentParser(
         description="People counter using YOLO26 + ByteTrack. "
         "Counts people passing through a camera view and logs events to CSV."
@@ -90,57 +144,45 @@ def build_argument_parser():
 
     parser.add_argument(
         "--camera",
-        default=str(DEFAULT_CAMERA_INDEX),
-        help="Camera device index (integer) or RTSP/video URL. Default: 0",
+        help="Camera device index (integer) or RTSP/video URL.",
     )
     parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL_NAME,
-        help=f"YOLO model file name. Default: {DEFAULT_MODEL_NAME}",
+        help="YOLO model file name.",
     )
     parser.add_argument(
         "--device",
-        default=DEFAULT_DEVICE,
         choices=VALID_DEVICES,
-        help="Inference device: 'auto' (detect Intel iGPU), 'cpu', or 'openvino'. "
-        f"Default: {DEFAULT_DEVICE}",
+        help="Inference device: 'auto' (detect Intel iGPU), 'cpu', or 'openvino'.",
     )
     parser.add_argument(
         "--confidence",
         type=validate_confidence,
-        default=DEFAULT_CONFIDENCE_THRESHOLD,
-        help=f"Minimum detection confidence (0.0 < x <= 1.0). "
-        f"Default: {DEFAULT_CONFIDENCE_THRESHOLD}",
+        help="Minimum detection confidence (0.0 < x <= 1.0).",
     )
     parser.add_argument(
         "--output",
-        default=DEFAULT_OUTPUT_DIRECTORY,
-        help=f"Output directory for CSV files. Default: {DEFAULT_OUTPUT_DIRECTORY}",
+        help="Output directory for CSV files.",
     )
     parser.add_argument(
         "--headless",
         action="store_true",
-        help="Run without GUI display",
+        help="Run without GUI display.",
     )
     parser.add_argument(
         "--lost-timeout",
         type=float,
-        default=LOST_TIMEOUT_SECONDS,
-        help=f"Seconds before a disappeared person's ID is forgotten. "
-        f"Default: {LOST_TIMEOUT_SECONDS}",
+        help="Seconds before a disappeared person's ID is forgotten.",
     )
     parser.add_argument(
         "--track-buffer",
         type=int,
-        default=BYTETRACK_TRACK_BUFFER,
-        help=f"Frames ByteTrack remembers a lost track before assigning a new ID. "
-        f"Higher = more likely to reuse same ID. Default: {BYTETRACK_TRACK_BUFFER}",
+        help="Frames ByteTrack remembers a lost track before assigning a new ID.",
     )
     parser.add_argument(
         "--log-level",
-        default=DEFAULT_LOG_LEVEL,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help=f"Logging verbosity. Default: {DEFAULT_LOG_LEVEL}",
+        help="Logging verbosity.",
     )
 
     return parser
@@ -227,34 +269,25 @@ def main():
     Settings are resolved in order of precedence (highest first):
     1. CLI arguments
     2. people-counter-config.json (next to the exe/script)
-    3. Built-in defaults
+
+    The config file is mandatory and must contain all required keys.
     """
     config = load_config_file()
 
     parser = build_argument_parser()
 
     # Apply config file values as defaults (CLI args still override)
-    if config:
-        defaults = {}
-        if "camera" in config:
-            defaults["camera"] = str(config["camera"])
-        if "model" in config:
-            defaults["model"] = config["model"]
-        if "device" in config:
-            defaults["device"] = config["device"]
-        if "confidence" in config:
-            defaults["confidence"] = float(config["confidence"])
-        if "output" in config:
-            defaults["output"] = config["output"]
-        if "headless" in config:
-            defaults["headless"] = config["headless"]
-        if "log_level" in config:
-            defaults["log_level"] = config["log_level"]
-        if "lost_timeout" in config:
-            defaults["lost_timeout"] = float(config["lost_timeout"])
-        if "track_buffer" in config:
-            defaults["track_buffer"] = int(config["track_buffer"])
-        parser.set_defaults(**defaults)
+    parser.set_defaults(
+        camera=str(config["camera"]),
+        model=config["model"],
+        device=config["device"],
+        confidence=float(config["confidence"]),
+        output=config["output"],
+        headless=config["headless"],
+        log_level=config["log_level"],
+        lost_timeout=float(config["lost_timeout"]),
+        track_buffer=int(config["track_buffer"]),
+    )
 
     args = parser.parse_args()
 
