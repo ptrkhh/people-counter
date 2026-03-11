@@ -17,6 +17,7 @@ import glob
 import json
 import logging
 import os
+import subprocess
 import sys
 from datetime import date
 
@@ -27,6 +28,7 @@ from google.oauth2 import service_account
 CONFIG_FILENAME = "gcs-uploader-config.json"
 CREDENTIALS_FILENAME = "gcs-uploader-credentials.json"
 GCL_LOG_NAME = "gcs-uploader"
+TASK_NAME = "GCS Uploader"
 
 logger = logging.getLogger("gcs-uploader")
 
@@ -36,6 +38,43 @@ def get_base_path():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def register_scheduled_task():
+    """Add this exe to Windows Task Scheduler to run hourly, if not already registered.
+
+    Only activates when running as a compiled exe. Skipped if the task already exists.
+    Requires elevation (admin rights) to register under SYSTEM.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+
+    check = subprocess.run(
+        ["schtasks", "/query", "/tn", TASK_NAME],
+        capture_output=True,
+    )
+    if check.returncode == 0:
+        logger.info("Scheduled task '%s' already exists, skipping registration.", TASK_NAME)
+        return
+
+    exe_path = sys.executable
+    result = subprocess.run(
+        [
+            "schtasks", "/create",
+            "/tn", TASK_NAME,
+            "/tr", f'"{exe_path}"',
+            "/sc", "HOURLY",
+        ],
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        logger.info("Registered Windows scheduled task '%s' (hourly, current user).", TASK_NAME)
+    else:
+        logger.warning(
+            "Could not register scheduled task '%s': %s",
+            TASK_NAME,
+            result.stderr.decode(errors="replace").strip(),
+        )
 
 
 def setup_logging(credentials):
@@ -133,6 +172,8 @@ def main():
     config = load_config(base_path)
     credentials = load_credentials(base_path)
     gcl_handler = setup_logging(credentials)
+
+    register_scheduled_task()
 
     exit_code = 0
     try:
